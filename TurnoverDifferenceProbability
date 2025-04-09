@@ -1,5 +1,3 @@
-
-
 # Estimate protein level difference using a t test of the log k of the constituent peptides
 
 silac_df_pro_fit_summary <- silac_df_pro_fit_summary |> 
