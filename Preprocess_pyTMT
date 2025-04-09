@@ -1,0 +1,211 @@
+
+```{r}
+#load packages 
+library(dplyr)
+library(tidyverse)
+```
+
+```{r}
+# Read data
+datasets <- list(
+  df1 = read_tsv(file.path()),
+  df2 = read_tsv(file.path()),
+  df3 = read_tsv(file.path()),
+  df4 = read_tsv(file.path()),
+  df5 = read_tsv(file.path()),
+  df6 = read_tsv(file.path())
+)
+
+```
+
+```{r}
+# Define TMT mappings
+tmt_mappings <- list(
+  df1 = c(),
+  df2 = c(),
+  df3 = c(),
+  df4 = c(),
+  df5 = c(),
+  df6 = c()  
+)
+```
+
+
+``` {r readData, message=FALSE, warning=FALSE, echo=F, include=FALSE}
+processed_datasets <- setNames(
+  lapply(names(datasets), function(name) {
+    df <- datasets[[name]]
+    colnames(df)[32:47] <- tmt_mappings[[name]]
+    df
+  }),
+  names(datasets)
+)
+
+```
+
+
+Parsimony and normalize
+``` {r readData, message=FALSE, warning=FALSE, echo=F, include=FALSE}
+processed_datasets2 <- lapply(processed_datasets, function(df) {
+# Remove all empty rows
+df <- na.omit(df)
+
+#remove rows where peptide is not modified with tmt label
+tmt <- c("\\[304.21\\]", "\\[320.20\\]", "\\[608.41\\]", 
+              "R\\[314.22\\]", "R\\[618.42\\]", "K\\[312.22\\]", "K\\[616.43\\]")
+df <- df %>%
+  dplyr::filter(grepl(paste(tmt, collapse = "|"), sequence))
+
+# Get sequences identified at q < 0.05 at any block
+df$concat <- paste0(df$sequence, '_', df$charge)
+admitted_peptides <- df |> dplyr::filter(`percolator q-value` <= 0.05) |> dplyr::distinct(concat) |> unlist()
+df <- df |> dplyr::filter(concat %in% admitted_peptides)
+
+#---- 2022-10-27 Collapse isoforms ----#
+
+unipro_df <- df |> dplyr::distinct(`protein id`)
+unipro_df$num_uniprot <- stringr::str_count(unipro_df$`protein id`, ",") + 1
+
+# Helper to get the short Uniprot IDs (e.g., Q9UKY7) from the longer name (e.g, Q9UKY7-2|CDV3_HUMAN)
+get_accession <- function(entry){
+  return (gsub("sp\\|(.*)\\|.*$", "\\1", entry))
+}
+
+# Helper to split the protein entries by commas then get the Uniprot IDs
+get_all_accessions <- function(entry){
+  stringr::str_split(entry, ",") |> lapply(FUN = get_accession)
+}
+
+# Helper to get the number of unique entries after stripping the isoform ending (e.g., -2)
+get_number_unique_genes <- function(entry){
+  gsub("\\-[0-9]*$", "", entry) %>% unique() %>% length()
+}
+  
+# Firt, get the UniProt IDs (e.g., P12345) from the long accession string
+unipro_df$stripped <- get_all_accessions(unipro_df$`protein id`)
+num_unique_genes <- c()
+# How many genes are there in each row?
+for (i in 1:length(unipro_df$stripped)){num_unique_genes <- c(num_unique_genes, get_number_unique_genes(unipro_df$stripped[i][[1]]))}
+unipro_df$num_unique_genes <- num_unique_genes
+
+# Next, pull the first collapsed uniprot canonical ID
+all_first_canonicals <- c()
+for (i in 1:length(unipro_df$stripped)){
+  first_canonical <- NA
+  for (id in sort(unipro_df$stripped[i][[1]])){
+    if(!grepl("-[0-9]*$", id)){
+      first_canonical <- id
+      break
+      }
+  }
+  all_first_canonicals <- c(all_first_canonicals, first_canonical)
+}
+unipro_df$collapsed_uniprot <- all_first_canonicals
+# Next, if the peptide is associated uniquely with an isoform, we will use that as the collapsed uniprot ID
+for(i in 1:nrow(unipro_df)){
+  if(unipro_df$num_uniprot[i] == 1 & is.na(unipro_df$collapsed_uniprot[i])){
+    unipro_df$collapsed_uniprot[i] <- toString(unipro_df$stripped[i][[1]])
+  }
+}
+# Finally, we ask if in each row, one of the non-canonical entries has a unique peptide 
+# (if so, for now we will also exclude this group, although this is up for debate later, if the canonical is a lot more abundant
+# than the non-canonical)
+
+# Here are the total list of noncanonical uniprots with unique peptides
+unique_noncanonical_list <- unipro_df |> dplyr::filter(num_uniprot == 1, grepl("-[0-9]*$", collapsed_uniprot)) |> dplyr::pull(collapsed_uniprot) |> unique()
+
+# For each row with more than 1 uniprot entries, check if anything is in the unique non-canonical list
+unipro_df$noncanonical_has_unique <- FALSE
+for(i in 1:nrow(unipro_df)){
+  if(unipro_df$num_uniprot[i] == 1) next
+  for (id in sort(unipro_df$stripped[i][[1]])){
+    if(grepl("-[0-9]*$", id)){
+       if(id %in% unique_noncanonical_list){
+      unipro_df$noncanonical_has_unique[i] <- TRUE
+      break
+       }
+    }
+  }
+}
+
+# Join back to df
+df <- df |> dplyr::left_join(dplyr::select(unipro_df, -stripped))
+
+# For every row, if there is a heavy label (R[10.01], R[314.22], R[618.42], K[8.01], K[312.22], K[616.43]), replace the first protein name with _H
+# To get all mods: stringr::str_extract_all(df$sequence, '\\[.+?\\]') %>% unlist() %>% unique()
+heavy_mods <- c("R\\[10.01\\]", "R\\[314.22\\]", "R\\[618.42\\]", "K\\[8.01\\]", "K\\[312.22\\]", "K\\[616.43\\]")
+df$is_heavy <- grepl(paste(heavy_mods, collapse="|"), df$concat)
+
+df <- df |> dplyr::mutate(uniprot_annotated = ifelse(is_heavy & !is.na(collapsed_uniprot),  paste0(collapsed_uniprot, "_H"), collapsed_uniprot)) 
+
+# Remove NA at collapsed_uniprot. Note we might still be able to rescue some unique isoform groupings from these proteins later
+df <- df |> dplyr::filter(!is.na(collapsed_uniprot))
+
+# Get the admissible proteins
+df <- df |> dplyr::filter(num_uniprot == 1 | (num_unique_genes == 1 & !noncanonical_has_unique))
+
+  return(df)
+})
+```
+
+``` {r readData, message=FALSE, warning=FALSE, echo=F, include=FALSE}
+processed_datasets_norm <- lapply(processed_datasets2, function(df) {
+
+#column combining sequence and annotated uniprot ID
+df <- df %>%
+  mutate(ID = paste(uniprot_annotated, concat, sep = "-"))
+
+# For and each protein, summarize the intensity
+df_summed <- df %>% dplyr::group_by(ID) |>
+  dplyr::summarize_at(dplyr::vars(32:47), sum) |> dplyr::ungroup()
+
+# Remove proteins where every channel has too little intensity
+df_summed <- df_summed[rowSums(df_summed[, 2:17]) > 1e4, ]
+
+
+
+# Convert column to rownames
+df1 <- df_summed |> tibble::column_to_rownames("ID")
+
+
+# Normalize proteins by column sum of each column
+colSumNormalization <- function(tmt){
+  
+  columnSums =colSums(tmt, na.rm=T)
+  scaling_factors = mean(columnSums) / columnSums
+  
+  return(sweep(tmt, 2, scaling_factors, FUN = "*"))
+}
+
+df2 <- df1 %>% colSumNormalization()
+
+  return(df2)
+})
+
+```
+
+Save normalized files
+```{r}
+# Iterate through each dataset in processed_datasets
+for (df_name in names(processed_datasets_norm)) {
+  
+  # Get the dataframe
+  df <- processed_datasets_norm[[df_name]]
+  
+  # Convert rownames to a column named "rownames"
+  df_with_rownames <- df %>% tibble::rownames_to_column("rownames")
+  
+  # Define the output file name
+  output_file <- file.path("../processed", paste0("01_cleaned_colsumnorm_", df_name, ".tsv"))
+  
+  # Save the dataframe as a TSV file using write_tsv
+  write_tsv(df_with_rownames, path = output_file)
+  
+  cat(paste("Saved", output_file, "\n"))
+}
+
+```
+
+
+
+
