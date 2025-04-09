@@ -35,6 +35,6 @@ silac_df_pro_fit_summary <- silac_df_pro_fit_summary |>
         thps_p <- t.test(log10(ctrl$k), log10(thps$k))$p.value
       })
     }
-    
+     data.frame(., thps_r, thps_p, row.names=NULL)
     
   }) |> dplyr::ungroup()
