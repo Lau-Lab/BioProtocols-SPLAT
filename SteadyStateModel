@@ -1,0 +1,54 @@
+
+# Simple steady-state model - supply t, a, Amax, and k; return A0
+SteadyStateModel <- function(t, kdeg, A_0, A_Inf) {
+  y <- A_0 + (A_Inf - A_0) * (1 - exp(-kdeg*t))
+  return(y)
+}
+
+# Solves dK/dA analytically
+SteadyStateModel_dk <- function(t, 
+                                kdeg, 
+                                A_0, 
+                                A_Inf, 
+                                dA) {
+  kdeg*exp(1)/(A_Inf-A_0)*dA
+}
+
+# This performs the curve-fitting
+fitSteadyStateModel <- function(ts,
+                                As,
+                                A_0,
+                                A_Inf,
+                                weights = NULL){
+  
+  # If not weighted, initialize a string of 1's
+  if (is.null(weights)){
+    weights <- rep(1, length(As))
+  }
+  
+  # Weighted least square function
+  # Takes in A_0, A_Inf, RIA data at each time point, and returns optimized k
+  # var is k; A_0 is beginning and A_Inf is plateau; for FS fitting these are 0 and 1
+  penaltyFunction <- function(var){
+    
+    predicted <- sapply(ts, function(x) SteadyStateModel(x, var, A_0, A_Inf))       
+    sumsOfSquare <- sum((As-predicted)^2 * weights^2) / sum(weights^2) * length(weights)
+    return(sumsOfSquare)
+  }
+  
+  Optimize <- optim(log(2)/2, penaltyFunction, method = "BFGS", control = list(maxit=100))
+  
+  k <- Optimize$par
+  SS <- Optimize$value
+  SE <- (Optimize$value/(length(ts)-1))^0.5
+  
+  # Calculate dk from dA
+  dk <- sapply(ts, function(x) SteadyStateModel_dk(x, Optimize$par, A_0, A_Inf, SE)) %>% abs() %>% min()
+  
+  R2 <- 1- (SS/(sum((As - mean(As))^2)))
+  
+  output <- c(k, SS, SE, dk, R2)
+  names(output) <- c("k", "SS", "SE", "dk", "R2")
+  
+  return(output)
+}
