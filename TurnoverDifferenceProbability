@@ -1,19 +1,4 @@
 
-# Harmonic mean
-hm <- function(x) 1/mean(1/x, na.rm=T)
-# Harmonic mean standard deviation
-sdhm <- function(x) ifelse(length(x) > 1, sqrt((mean(1/x, na.rm=T))^(-4)*var(1/x, na.rm=T)/length(x)), 0)
-
-
-
-# Calculate harmonic mean and SD (these are not reported currently)
-silac_df_pro_fit_summary <- silac_df_pep_fit |> 
-  dplyr::group_by(biosample, collapsed_uniprot) |>
-  dplyr::mutate(hm_pep_k = hm(k),
-                hmsd_pep_k = sdhm(k),
-                num_peps = n_distinct(concat)) |>
-  dplyr::ungroup() |>
-  formatData()
 
 # Estimate protein level difference using a t test of the log k of the constituent peptides
 
@@ -24,17 +9,15 @@ silac_df_pro_fit_summary <- silac_df_pro_fit_summary |>
     ctrl <- dplyr::filter(., treatment=="CTRL")
 
     thps <- dplyr::filter(., treatment=="THPS")
-    
-    thps_r <- NA
+
     thps_p <- NA
     
     # Compare THPS to CTRL
     if(nrow(ctrl) > 1 & nrow(thps) > 1){
-      thps_r <- max(thps$hm_pep_k)/max(ctrl$hm_pep_k)
       try({
         thps_p <- t.test(log10(ctrl$k), log10(thps$k))$p.value
       })
     }
-     data.frame(., thps_r, thps_p, row.names=NULL)
+     data.frame(., thps_p, row.names=NULL)
     
   }) |> dplyr::ungroup()
